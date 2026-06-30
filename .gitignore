@@ -21,3 +21,6 @@ raycast-env.d.ts
 
 # local-only maintainer notes (publishing/release process — not part of the public repo)
 CONTRIBUTING.md
+
+# local-only Claude Code guidance — kept on the maintainer's machine, not published
+CLAUDE.md
