@@ -42,36 +42,53 @@ import {
 } from "./lib/format";
 import { limitCardImage } from "./lib/svg";
 
-type SessionData = {
-  cache: StatuslineCache;
-  ccusage: CcusageResult;
-  week: CcusageWeekResult;
-};
-
-async function loadSession(): Promise<SessionData> {
-  const [cache, ccusage, week] = await Promise.all([
-    readStatuslineCache(),
-    getCcusageActiveBlock(),
-    getThisWeekUsage(),
-  ]);
-  return { cache, ccusage, week };
+async function onLoadError(err: unknown): Promise<void> {
+  await showToast({
+    style: Toast.Style.Failure,
+    title: "Couldn’t refresh session usage",
+    message: err instanceof Error ? err.message : String(err),
+  });
 }
 
 export default function Command() {
-  const { data, isLoading, revalidate } = useCachedPromise(loadSession, [], {
+  // Three independent sources, loaded separately so the FAST one never waits on
+  // the slow ones. The hero gauges come from the statusline cache (a ~1ms file
+  // read); the secondary block/week numbers come from ccusage (a CLI scan of
+  // the local logs, ~0.1–2s). Loading them as one Promise.all would block the
+  // gauges behind the slowest call — the main source of the laggy feel.
+  const cacheState = useCachedPromise(readStatuslineCache, [], {
     keepPreviousData: true,
-    onError: async (err) => {
-      await showToast({
-        style: Toast.Style.Failure,
-        title: "Couldn’t refresh session usage",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    },
+    onError: onLoadError,
+  });
+  const cache = cacheState.data;
+
+  // ccusage scans only matter once the cache is configured; defer them until
+  // then so the one-time setup screen never spawns the CLI. `week` is the
+  // slowest call (full weekly scan) and feeds only the side panel, so it gets
+  // its own hook and never holds up the active-block line.
+  const configured = cache?.configured === true;
+  const blockState = useCachedPromise(getCcusageActiveBlock, [], {
+    keepPreviousData: true,
+    execute: configured,
+    onError: onLoadError,
+  });
+  const weekState = useCachedPromise(getThisWeekUsage, [], {
+    keepPreviousData: true,
+    execute: configured,
+    onError: onLoadError,
   });
 
-  const cache = data?.cache;
-  const ccusage = data?.ccusage;
-  const week = data?.week;
+  const ccusage = blockState.data;
+  const week = weekState.data;
+  const isLoading =
+    cacheState.isLoading || blockState.isLoading || weekState.isLoading;
+  const revalidate = () => {
+    cacheState.revalidate();
+    if (configured) {
+      blockState.revalidate();
+      weekState.revalidate();
+    }
+  };
 
   const refreshAction = (
     <Action
