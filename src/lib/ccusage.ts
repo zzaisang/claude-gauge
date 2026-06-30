@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { getPreferenceValues } from "@raycast/api";
@@ -230,16 +230,70 @@ function resolveRunner(runner: string): string {
   return runner; // fall back to the bare name (relies on PATH)
 }
 
+/** Cached absolute path to a directly-runnable ccusage binary, once found. */
+let cachedCcusageBin: string | undefined;
+
+/**
+ * Locate a ccusage executable we can invoke DIRECTLY, skipping the package
+ * runner. `npx ccusage` pays ~0.5s of pure wrapper overhead on every call
+ * (node → npm-cli → package resolution → spawn); calling the resolved binary is
+ * ~5× faster. We look in the standard node bin dirs (a global install) and in
+ * npx's on-disk cache (`~/.npm/_npx/<hash>/node_modules/.bin/ccusage`).
+ *
+ * Returns `undefined` on the very first run, before ccusage is installed — the
+ * caller then falls back to `npx`/`bunx ccusage`, which installs it, so the
+ * NEXT call resolves directly. Only positive hits are memoized, so that
+ * first-run fallback is re-attempted (cheaply) until the binary appears.
+ */
+function findCcusageBinary(): string | undefined {
+  if (cachedCcusageBin) return cachedCcusageBin;
+
+  // 1. A globally-installed `ccusage` on a known bin dir.
+  for (const dir of nodeBinDirs()) {
+    const candidate = join(dir, "ccusage");
+    if (existsSync(candidate)) return (cachedCcusageBin = candidate);
+  }
+
+  // 2. npx's package cache: ~/.npm/_npx/<hash>/node_modules/.bin/ccusage.
+  // The <hash> is derived from the package spec, so it is stable across runs;
+  // we glob it rather than hard-coding the hash.
+  try {
+    const npxRoot = join(homedir(), ".npm", "_npx");
+    for (const entry of readdirSync(npxRoot)) {
+      const candidate = join(npxRoot, entry, "node_modules", ".bin", "ccusage");
+      if (existsSync(candidate)) return (cachedCcusageBin = candidate);
+    }
+  } catch {
+    // _npx dir absent or unreadable — fine, fall through to the runner.
+  }
+
+  return undefined;
+}
+
 function runCcusage(
   runner: string,
   configDir: string,
   sub: string,
   extraArgs: string[] = [],
 ): Promise<string> {
+  // Prefer the resolved binary; otherwise the runner installs/runs it for us.
+  const bin = findCcusageBinary();
+  const file = bin ?? resolveRunner(runner);
+  // `--offline` skips ccusage's per-call network fetch of model pricing (it
+  // ships bundled pricing) — a consistent latency win, and fine for what is
+  // already an estimate. The binary's shebang (`env node`) still relies on the
+  // augmented PATH below to find `node`.
+  const args = [
+    ...(bin ? [] : ["ccusage"]),
+    sub,
+    "--json",
+    "--offline",
+    ...extraArgs,
+  ];
   return new Promise((resolve, reject) => {
     const child = execFile(
-      resolveRunner(runner),
-      ["ccusage", sub, "--json", ...extraArgs],
+      file,
+      args,
       {
         timeout: TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
