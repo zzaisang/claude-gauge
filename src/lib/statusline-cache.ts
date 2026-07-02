@@ -48,18 +48,27 @@ export type StatuslineCache =
       path: string;
     };
 
+/**
+ * Keys whose name explicitly says "percent(age)" — these are authoritative
+ * 0–100 values (Claude Code emits `used_percentage` as an integer percent) and
+ * are used verbatim, never rescaled.
+ */
 const PERCENT_KEYS = [
   "used_percentage",
   "usedPercentage",
-  "utilization",
   "percent",
   "percentUsed",
   "percent_used",
-  "used",
-  "usage",
   "usagePercent",
   "usage_percent",
 ];
+
+/**
+ * Ambiguous keys that MIGHT hold a 0–1 fraction rather than a 0–100 percent.
+ * We only scale these when the value is strictly below 1, so a literal `1`
+ * (i.e. 1% used) is never mistaken for the fraction 1.0 (100% used).
+ */
+const FRACTION_CAPABLE_KEYS = ["utilization", "used", "usage"];
 
 const RESET_KEYS = [
   "resets_at",
@@ -77,24 +86,36 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/** Parse a finite number from a value that may be a number or numeric string. */
+function readNumber(raw: unknown): number | null {
+  const value =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string"
+        ? Number.parseFloat(raw)
+        : NaN;
+  return Number.isFinite(value) ? value : null;
+}
+
 /** Pull a 0–100 percentage from a window object, tolerating 0–1 fractions. */
 function readPercent(
   window: Record<string, unknown> | undefined,
 ): number | null {
   if (!window) return null;
+
+  // Explicit percentage fields are authoritative 0–100 values — use as-is.
   for (const key of PERCENT_KEYS) {
-    const raw = window[key];
-    const value =
-      typeof raw === "number"
-        ? raw
-        : typeof raw === "string"
-          ? Number.parseFloat(raw)
-          : NaN;
-    if (Number.isFinite(value)) {
-      // Some sources express utilization as a 0–1 fraction; scale those up.
-      return value > 0 && value <= 1 ? value * 100 : value;
-    }
+    const value = readNumber(window[key]);
+    if (value != null) return value;
   }
+
+  // Ambiguous fields may be a 0–1 fraction; scale only when strictly below 1
+  // so a literal `1` (1% used) is never misread as the fraction 1.0 (100%).
+  for (const key of FRACTION_CAPABLE_KEYS) {
+    const value = readNumber(window[key]);
+    if (value != null) return value > 0 && value < 1 ? value * 100 : value;
+  }
+
   return null;
 }
 
