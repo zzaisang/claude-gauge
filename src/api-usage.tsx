@@ -34,6 +34,7 @@ import {
   type RateWindow,
 } from "./lib/key-status";
 import {
+  clamp,
   countdown,
   formatCost,
   formatNumber,
@@ -667,11 +668,6 @@ function renderKeyStatusMetadata(
 
 const SOURCE_DISCLAIMER =
   "추정치 · 로컬 Claude Code 로그(ccusage) 기준 · 실제 청구액 아님";
-
-/** Clamp a number into the inclusive [min, max] range. */
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 /** Parse the monthly-budget preference; blank/NaN/≤0 means "no budget". */
 function parseBudget(raw: string | undefined): number | null {
